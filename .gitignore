@@ -1,0 +1,7 @@
+# API 키가 들어 있는 파일 → 절대 GitHub에 올리지 않기
+.env
+
+# 파이썬이 자동으로 만드는 파일들
+__pycache__/
+venv/
+.venv/

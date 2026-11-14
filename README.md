@@ -4,7 +4,7 @@
 
 | 🔗 바로가기 | |
 |---|---|
-| 데모 사이트 | https://yoonsieun0159.github.io/dongne-hancut/ |
+| 데모 사이트 | file:///C:/Users/yoons/Downloads/index%20(5).html |
 | 실제 AI 분석 시연 영상 | 준비 중 |
 
 ![동네한컷 메인 화면](docs/01_main.png)

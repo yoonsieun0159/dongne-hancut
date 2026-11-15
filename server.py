@@ -3,6 +3,7 @@
 =====================
 - 브라우저에 index.html 화면을 보여주고
 - /api/analyze 로 받은 사진을 Claude(AI)에게 보내서 분석 결과를 돌려줘요.
+- /api/reports 로 '신고 완료' 기록을 저장하고, 근처에 이미 신고된 곳이 있는지 알려줘요.
 
 API 키를 서버에만 두기 때문에, 웹사이트를 보는 사람에게 키가 드러나지 않아요.
 
@@ -16,7 +17,10 @@ API 키를 서버에만 두기 때문에, 웹사이트를 보는 사람에게 �
 import base64
 import binascii
 import json
+import math
 import os
+import sqlite3
+from datetime import datetime
 
 import anthropic
 from dotenv import load_dotenv
@@ -42,6 +46,10 @@ CATEGORIES = [
     "기타",
 ]
 LEVELS = ["낮음", "보통", "높음"]
+
+# 신고 기록을 저장하는 데이터베이스 파일 (처음 실행할 때 자동으로 만들어져요)
+DB_PATH = os.path.join(HERE, "reports.db")
+MAX_RADIUS = 500  # 근처 검색 최대 반경 (미터)
 
 # AI에게 주는 역할 설명 (분석 기준)
 SYSTEM_PROMPT = """당신은 주민이 동네의 불편하거나 위험한 시설을 구청이나 안전신문고에 신고하도록 돕는 분석가입니다.
@@ -200,6 +208,127 @@ def analyze():
         return error("AI 답을 읽지 못했어요. 다시 시도해 주세요.", 502)
 
     return jsonify({"ok": True, "result": result})
+
+
+# ---------- 신고 기록 (이미 신고된 곳 알려주기) ----------
+
+def get_db():
+    """데이터베이스에 연결해요. 결과를 dict처럼 쓸 수 있게 해 둬요."""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def init_db():
+    """신고 기록 표(table)가 없으면 만들어요."""
+    with get_db() as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS reports (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                lat         REAL NOT NULL,      -- 위도
+                lng         REAL NOT NULL,      -- 경도
+                category    TEXT NOT NULL,      -- 문제 유형
+                summary     TEXT NOT NULL,      -- 짧은 설명
+                status      TEXT NOT NULL,      -- '신고됨' 또는 '처리 완료'
+                created_at  TEXT NOT NULL,      -- 기록한 시각
+                resolved_at TEXT                -- 처리 완료로 바뀐 시각
+            )
+        """)
+
+
+def distance_m(lat1, lng1, lat2, lng2):
+    """두 위치 사이의 거리(미터)를 계산해요. (하버사인 공식)"""
+    r = 6371000  # 지구 반지름 (미터)
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp = math.radians(lat2 - lat1)
+    dl = math.radians(lng2 - lng1)
+    a = math.sin(dp / 2) ** 2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+    return 2 * r * math.asin(math.sqrt(a))
+
+
+def read_coords(lat, lng):
+    """위도·경도가 올바른 숫자인지 확인해요. 틀리면 None."""
+    try:
+        lat, lng = float(lat), float(lng)
+    except (TypeError, ValueError):
+        return None
+    if not (-90 <= lat <= 90 and -180 <= lng <= 180):
+        return None
+    return lat, lng
+
+
+def report_to_dict(row, distance=None):
+    item = dict(row)
+    if distance is not None:
+        item["distance"] = round(distance)
+    return item
+
+
+@app.get("/api/reports/nearby")
+def nearby_reports():
+    coords = read_coords(request.args.get("lat"), request.args.get("lng"))
+    if coords is None:
+        return error("위치 정보가 올바르지 않아요.", 400)
+    lat, lng = coords
+    try:
+        radius = min(float(request.args.get("radius", 30)), MAX_RADIUS)
+    except ValueError:
+        radius = 30
+
+    # 먼저 네모난 범위로 대충 거르고, 정확한 거리는 아래에서 계산해요
+    dlat = radius / 111320
+    dlng = radius / (111320 * max(math.cos(math.radians(lat)), 0.01))
+    with get_db() as conn:
+        rows = conn.execute(
+            "SELECT * FROM reports WHERE lat BETWEEN ? AND ? AND lng BETWEEN ? AND ?",
+            (lat - dlat, lat + dlat, lng - dlng, lng + dlng),
+        ).fetchall()
+
+    results = []
+    for row in rows:
+        d = distance_m(lat, lng, row["lat"], row["lng"])
+        if d <= radius:
+            results.append(report_to_dict(row, d))
+    results.sort(key=lambda r: r["distance"])
+    return jsonify({"ok": True, "reports": results[:10]})
+
+
+@app.post("/api/reports")
+def create_report():
+    data = request.get_json(silent=True) or {}
+    coords = read_coords(data.get("lat"), data.get("lng"))
+    if coords is None:
+        return error("위치 정보가 올바르지 않아요.", 400)
+    category = data.get("category")
+    if category not in CATEGORIES:
+        return error("문제 유형이 올바르지 않아요.", 400)
+    summary = str(data.get("summary", "")).strip()[:100]  # 너무 긴 글은 잘라요
+
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_db() as conn:
+        cur = conn.execute(
+            "INSERT INTO reports (lat, lng, category, summary, status, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (coords[0], coords[1], category, summary, "신고됨", now),
+        )
+        row = conn.execute("SELECT * FROM reports WHERE id = ?", (cur.lastrowid,)).fetchone()
+    return jsonify({"ok": True, "report": report_to_dict(row)})
+
+
+@app.post("/api/reports/<int:report_id>/resolve")
+def resolve_report(report_id):
+    now = datetime.now().isoformat(timespec="seconds")
+    with get_db() as conn:
+        cur = conn.execute(
+            "UPDATE reports SET status = '처리 완료', resolved_at = ? WHERE id = ? AND status != '처리 완료'",
+            (now, report_id),
+        )
+        row = conn.execute("SELECT * FROM reports WHERE id = ?", (report_id,)).fetchone()
+    if row is None:
+        return error("해당 신고 기록을 찾지 못했어요.", 404)
+    return jsonify({"ok": True, "report": report_to_dict(row), "changed": cur.rowcount > 0})
+
+
+init_db()
 
 
 if __name__ == "__main__":

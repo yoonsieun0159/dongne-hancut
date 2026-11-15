@@ -36,6 +36,7 @@
 - **신고서 자동 작성:** 장소, 유형, 설명을 모아 신고 문장 생성 (직접 수정 가능)
 - **복사·공유:** 클립보드 복사, 휴대폰 공유 창으로 사진과 함께 보내기
 - **신고 바로가기:** 안전신문고, 국민신문고, 120 민원 상담
+- **이미 신고된 곳 알림 (NEW):** 신고를 마친 위치를 기록해 두면, 다른 사람이 반경 30m 안에서 위치를 찾을 때 "이미 신고된 곳"이라고 알려 줘서 중복 신고를 줄임. "고쳐졌어요"를 누르면 처리 완료로 표시
 
 
 
@@ -61,7 +62,7 @@ flowchart LR
 | 구분 | 기술 |
 |---|---|
 | 화면 | HTML, CSS, JavaScript (프레임워크 없이) |
-| 서버 | Python, Flask |
+| 서버 | Python, Flask, SQLite (신고 기록 저장) |
 | AI | Claude API (`claude-opus-5-5`), 이미지 입력, 구조화된 출력(JSON Schema) |
 | 브라우저 기능 | Geolocation API, Clipboard API, Web Share API, Canvas(사진 축소) |
 | 지도·주소 | OpenStreetMap Nominatim (주소 변환), 카카오맵 링크 |
